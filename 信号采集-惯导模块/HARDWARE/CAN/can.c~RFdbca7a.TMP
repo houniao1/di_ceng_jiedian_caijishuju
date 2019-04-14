@@ -1,0 +1,404 @@
+#include "uart2.h"
+#include "led.h"
+#include "delay.h"
+#include "usart.h"
+#include "elmo.h" 
+#include "can.h"
+#include "adc.h"
+
+extern int buf_adc_value_tmp[13];
+unsigned long g_Index;            //  È«¾Ö±äÁ¿,ÐèÒª¶ÁµÄ¶ÔÏó×ÖµäµÄË÷Òý
+unsigned long g_SubIndex;         //  È«¾Ö±äÁ¿,ÐèÒª¶ÁµÄ¶ÔÏó×ÖµäµÄ×ÓË÷Òý
+unsigned long g_ReadNodeID;       //  È«¾Ö±äÁ¿,ÐèÒª¶ÁµÄ½ÚµãID
+unsigned int Can_RX_STA = 0;
+unsigned char Can_REC_LEN = 200;
+u8 fished_can = 0;
+u8 can_Node_buff[200];
+u8 back_up_adc[8];
+Can_node   node_comm;
+
+u8 my_addr = 4   ;
+u8 buf_adc_value[13];
+int foot_total;
+extern u8 send_rad[8];
+//////////////////////////////////////////////////////////////////////////////////	 
+//±¾³ÌÐòÖ»¹©Ñ§Ï°Ê¹ÓÃ£¬Î´¾­×÷ÕßÐí¿É£¬²»µÃÓÃÓÚÆäËüÈÎºÎÓÃÍ¾
+//ALIENTEKÕ½½¢STM32¿ª·¢°å
+//CANÇý¶¯ ´úÂë	   
+//ÕýµãÔ­×Ó@ALIENTEK
+//¼¼ÊõÂÛÌ³:www.openedv.com
+//ÐÞ¸ÄÈÕÆÚ:2012/9/11
+//°æ±¾£ºV1.0
+//°æÈ¨ËùÓÐ£¬µÁ°æ±Ø¾¿¡£
+//Copyright(C) ¹ãÖÝÊÐÐÇÒíµç×Ó¿Æ¼¼ÓÐÏÞ¹«Ë¾ 2009-2019
+//All rights reserved									  
+//////////////////////////////////////////////////////////////////////////////////
+//CAN³õÊ¼»¯
+//tsjw:ÖØÐÂÍ¬²½ÌøÔ¾Ê±¼äµ¥Ôª.·¶Î§:1~3; CAN_SJW_1tq	 CAN_SJW_2tq CAN_SJW_3tq CAN_SJW_4tq
+//tbs2:Ê±¼ä¶Î2µÄÊ±¼äµ¥Ôª.·¶Î§:1~8;
+//tbs1:Ê±¼ä¶Î1µÄÊ±¼äµ¥Ôª.·¶Î§:1~16;	  CAN_BS1_1tq ~CAN_BS1_16tq
+//brp :²¨ÌØÂÊ·ÖÆµÆ÷.·¶Î§:1~1024;(Êµ¼ÊÒª¼Ó1,Ò²¾ÍÊÇ1~1024) tq=(brp)*tpclk1
+//×¢ÒâÒÔÉÏ²ÎÊýÈÎºÎÒ»¸ö¶¼²»ÄÜÉèÎª0,·ñÔò»áÂÒ.
+//²¨ÌØÂÊ=Fpclk1/((tsjw+tbs1+tbs2)*brp);
+//mode:0,ÆÕÍ¨Ä£Ê½;1,»Ø»·Ä£Ê½;1                                1 8 7 1   1
+//Fpclk1µÄÊ±ÖÓÔÚ³õÊ¼»¯µÄÊ±ºòÉèÖÃÎª36M,Èç¹ûÉèÖÃCAN_Normal_Init(1,8,7,5,1);
+//Ôò²¨ÌØÂÊÎª:36M/((1+8+7)*5)=450Kbps
+//·µ»ØÖµ:0,³õÊ¼»¯OK;
+//    ÆäËû,³õÊ¼»¯Ê§°Ü;
+#define CAN_RX0_INT_ENABLE	1 //Ê¹ÄÜRX0ÖÐ¶Ï
+u8 CAN_Mode_Init(u8 tsjw,u8 tbs2,u8 tbs1,u16 brp,u8 mode)
+{                    //1          //4       //13
+
+	GPIO_InitTypeDef GPIO_InitStructure; 
+	CAN_InitTypeDef        CAN_InitStructure;
+ 	CAN_FilterInitTypeDef  CAN_FilterInitStructure;
+#if CAN_RX0_INT_ENABLE 
+   	NVIC_InitTypeDef  NVIC_InitStructure;
+#endif
+
+	RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA, ENABLE);//Ê¹ÄÜPORTAÊ±ÖÓ	                   											 
+
+	RCC_APB1PeriphClockCmd(RCC_APB1Periph_CAN1, ENABLE);//Ê¹ÄÜCAN1Ê±ÖÓ	
+
+	GPIO_InitStructure.GPIO_Pin = GPIO_Pin_12;
+	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AF_PP;	//¸´ÓÃÍÆÍì
+	GPIO_Init(GPIOA, &GPIO_InitStructure);		//³õÊ¼»¯IO
+
+	GPIO_InitStructure.GPIO_Pin = GPIO_Pin_11;
+	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IPU;//ÉÏÀ­ÊäÈë
+	GPIO_Init(GPIOA, &GPIO_InitStructure);//³õÊ¼»¯IO
+
+	//CANµ¥ÔªÉèÖÃ
+	CAN_InitStructure.CAN_TTCM=DISABLE;						 //·ÇÊ±¼ä´¥·¢Í¨ÐÅÄ£Ê½  //
+	CAN_InitStructure.CAN_ABOM=DISABLE;						 //Èí¼þ×Ô¶¯ÀëÏß¹ÜÀí	 //
+	CAN_InitStructure.CAN_AWUM=DISABLE;						 //Ë¯ÃßÄ£Ê½Í¨¹ýÈí¼þ»½ÐÑ(Çå³ýCAN->MCRµÄSLEEPÎ»)//
+	CAN_InitStructure.CAN_NART=ENABLE;						 	//½ûÖ¹±¨ÎÄ×Ô¶¯´«ËÍ //
+	CAN_InitStructure.CAN_RFLM=DISABLE;						 //±¨ÎÄ²»Ëø¶¨,ÐÂµÄ¸²¸Ç¾ÉµÄ // 
+	CAN_InitStructure.CAN_TXFP=DISABLE;						 //ÓÅÏÈ¼¶ÓÉ±¨ÎÄ±êÊ¶·û¾ö¶¨ //
+	CAN_InitStructure.CAN_Mode= mode;	         //Ä£Ê½ÉèÖÃ£º mode:0,ÆÕÍ¨Ä£Ê½;1,»Ø»·Ä£Ê½; //
+	//ÉèÖÃ²¨ÌØÂÊ
+	CAN_InitStructure.CAN_SJW=tsjw;				//ÖØÐÂÍ¬²½ÌøÔ¾¿í¶È(Tsjw)Îªtsjw+1¸öÊ±¼äµ¥Î»  CAN_SJW_1tq	 CAN_SJW_2tq CAN_SJW_3tq CAN_SJW_4tq
+	CAN_InitStructure.CAN_BS1=tbs1; //Tbs1=tbs1+1¸öÊ±¼äµ¥Î»CAN_BS1_1tq ~CAN_BS1_16tq
+	CAN_InitStructure.CAN_BS2=tbs2;//Tbs2=tbs2+1¸öÊ±¼äµ¥Î»CAN_BS2_1tq ~	CAN_BS2_8tq
+	CAN_InitStructure.CAN_Prescaler=brp;            //·ÖÆµÏµÊý(Fdiv)Îªbrp+1	//
+	CAN_Init(CAN1, &CAN_InitStructure);            // ³õÊ¼»¯CAN1 
+
+//CAN_FilterInitStructure.CAN_FilterIdHigh=(((u32)0x5678<<3)&0xFFFF0000)>>16;
+//CAN_FilterInitStructure.CAN_FilterIdLow=(((u32)0x5678<<3)|CAN_ID_EXT|CAN_RTR_DATA)&0xFFFF;
+//  CAN_FilterInitStructure.CAN_FilterMaskIdHigh=0xFFFF;
+//  CAN_FilterInitStructure.CAN_FilterMaskIdLow=0xFFFF;
+	CAN_FilterInitStructure.CAN_FilterNumber=0;	  //¹ýÂËÆ÷0
+	CAN_FilterInitStructure.CAN_FilterMode=CAN_FilterMode_IdMask; 
+	CAN_FilterInitStructure.CAN_FilterScale=CAN_FilterScale_32bit; //32Î» 
+	CAN_FilterInitStructure.CAN_FilterIdHigh=(((u32)my_addr<<21)&0xFFFF0000)>>16;////32Î»ID
+	CAN_FilterInitStructure.CAN_FilterIdLow=(((u32)my_addr<<21)|CAN_ID_STD|CAN_RTR_DATA)&0xFFFF;;
+	CAN_FilterInitStructure.CAN_FilterMaskIdHigh=0xFFFF;//32Î»MASK
+	CAN_FilterInitStructure.CAN_FilterMaskIdLow=0xFFFF;
+	CAN_FilterInitStructure.CAN_FilterFIFOAssignment=CAN_Filter_FIFO0;//¹ýÂËÆ÷0¹ØÁªµ½FIFO0
+	CAN_FilterInitStructure.CAN_FilterActivation=ENABLE; //¼¤»î¹ýÂËÆ÷0
+
+  	CAN_FilterInit(&CAN_FilterInitStructure);//ÂË²¨Æ÷³õÊ¼»¯
+#if CAN_RX0_INT_ENABLE
+	
+	CAN_ITConfig(CAN1,CAN_IT_FMP0,ENABLE);//FIFO0ÏûÏ¢¹ÒºÅÖÐ¶ÏÔÊÐí.		    
+  
+  	NVIC_InitStructure.NVIC_IRQChannel = USB_LP_CAN1_RX0_IRQn;
+  	NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = 2;     // Ö÷ÓÅÏÈ¼¶Îª1
+  	NVIC_InitStructure.NVIC_IRQChannelSubPriority = 1;            // ´ÎÓÅÏÈ¼¶Îª0
+  	NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
+  	NVIC_Init(&NVIC_InitStructure);
+#endif
+	return 0;
+}
+
+void Can_node_send_byte(u8 addr,u8 function ,u8 *pda,u8 len)
+{
+	int i;
+	Can_node  node_communicate;
+	node_communicate.elmoCAN.IDE = CAN_ID_STD;                    //  ·¢ËÍ±ê×¼Ö¡
+	node_communicate.elmoCAN.StdId  = addr;         //  CAN±¨ÎÄIDelmo->ulNodeID
+	node_communicate.elmoCAN.RTR=CAN_RTR_DATA;					   //Êý¾ÝÖ¡
+	node_communicate.elmoCAN.DLC = 8; 
+	node_communicate.elmoCAN.Data[0] =my_addr;
+	node_communicate.elmoCAN.Data[1] = function;
+	node_communicate.elmoCAN.Data[2] = len;
+	
+  for(i=0;i<len;i++)//·¢ËÍÊý¾Ý
+	  node_communicate.elmoCAN.Data[i+3] = pda[i];
+	for(;i<5;i++)//±íÊ¾·¢ËÍµÄÊý¾Ý²»µ½4¸ö×Ö½ÚÔò²¹Áã
+	  node_communicate.elmoCAN.Data[len+i+3] = 0;
+	CAN_Transmit(CAN1, &(node_communicate.elmoCAN));     //  µ÷ÓÃ·¢ËÍ±¨ÎÄº¯Êý
+}
+void Can_send_rad(u8 addr,u8 *pda)
+{
+	int i;
+	Can_node  node_communicate;
+	node_communicate.elmoCAN.IDE = CAN_ID_STD;                    //  ·¢ËÍ±ê×¼Ö¡
+	node_communicate.elmoCAN.StdId  = addr;         //  CAN±¨ÎÄIDelmo->ulNodeID
+	node_communicate.elmoCAN.RTR=CAN_RTR_DATA;					   //Êý¾ÝÖ¡
+	node_communicate.elmoCAN.DLC = 8; 
+	node_communicate.elmoCAN.Data[0] = my_addr;
+	node_communicate.elmoCAN.Data[1] = 25;
+	for(i=0;i<6;i++)
+	{
+	    node_communicate.elmoCAN.Data[i+2] = pda[i];
+	}
+	
+	CAN_Transmit(CAN1, &(node_communicate.elmoCAN));     //  µ÷ÓÃ·¢ËÍ±¨ÎÄº¯Ê
+}
+void Can_send_small_leg_force(u8 addr,u8 *pda)
+{
+	int i;
+	Can_node  node_communicate;
+	node_communicate.elmoCAN.IDE = CAN_ID_STD;                    //  ·¢ËÍ±ê×¼Ö¡
+	node_communicate.elmoCAN.StdId  = addr;         //  CAN±¨ÎÄIDelmo->ulNodeID
+	node_communicate.elmoCAN.RTR=CAN_RTR_DATA;					   //Êý¾ÝÖ¡
+	node_communicate.elmoCAN.DLC = 8; 
+	node_communicate.elmoCAN.Data[0] = my_addr;
+	node_communicate.elmoCAN.Data[1] = 23 ;
+	for(i=0;i<6;i++)
+	{
+	    node_communicate.elmoCAN.Data[i+2] = pda[i];
+	}
+	
+	CAN_Transmit(CAN1, &(node_communicate.elmoCAN));     //  µ÷ÓÃ·¢ËÍ±¨ÎÄº¯Ê
+}
+void Can_send_adc(u8 addr,u8 *pda)
+{
+	int i;
+	Can_node  node_communicate;
+	node_communicate.elmoCAN.IDE = CAN_ID_STD;                    //  ·¢ËÍ±ê×¼Ö¡
+	node_communicate.elmoCAN.StdId  = addr;         //  CAN±¨ÎÄIDelmo->ulNodeID
+	node_communicate.elmoCAN.RTR=CAN_RTR_DATA;					   //Êý¾ÝÖ¡
+	node_communicate.elmoCAN.DLC = 8; 
+	node_communicate.elmoCAN.Data[0] = my_addr;
+	node_communicate.elmoCAN.Data[1] = 22;
+	for(i=0;i<6;i++)
+	{
+	    node_communicate.elmoCAN.Data[i+2] = pda[i];
+	}
+	
+	CAN_Transmit(CAN1, &(node_communicate.elmoCAN));     //  µ÷ÓÃ·¢ËÍ±¨ÎÄº¯Ê
+}
+void Respond_node(char node )
+{
+  u8  rep[8] = {0};
+	rep[0] = 'O';
+	rep[1] = 'K';
+	rep[2] = my_addr;
+	rep[3] = 0;
+	Can_node_send_byte(1,11,rep,4);
+}
+
+void Get_adc()
+{
+  int temp_adc  = 0;
+  u8 send_len  = 0;
+	int i;
+  foot_total = 0;
+#ifdef foot		
+
+//0	 ×ó½ÅÈý¸öÖµ
+   temp_adc = Get_Adc_Average(ADC_Channel_0,10);
+   buf_adc_value[0] = (u8)(temp_adc>>8);
+   buf_adc_value[1] = (u8)(temp_adc );	
+   
+   foot_total =	0;
+//1  
+   temp_adc = Get_Adc_Average(ADC_Channel_1,10); 
+   buf_adc_value[2] = (u8)(temp_adc>>8);
+   buf_adc_value[3] = (u8) (temp_adc );
+   foot_total+=	temp_adc;	
+//5	
+   temp_adc = Get_Adc_Average(ADC_Channel_5,10);
+   buf_adc_value[4] = (u8)(temp_adc>>8);
+   buf_adc_value[5] = (u8) (temp_adc);	
+   //foot_total +=	temp_adc;	 
+  
+// ×óÏ¥À­Á¦
+//6  
+   temp_adc = Get_Adc_Average(ADC_Channel_6,10); 
+   buf_adc_value[6] = (u8)(temp_adc>>8);
+   buf_adc_value[7] = (u8) (temp_adc );	//1	
+	 temp_adc = 0;
+////7  
+	temp_adc = Get_Adc_Average(ADC_Channel_7,10);
+   buf_adc_value[8] = (u8)(temp_adc>>8);
+   buf_adc_value[9] = (u8) (temp_adc );		
+   temp_adc = 0;	 
+//PB08 Í¨µÀ
+   temp_adc = Get_Adc_Average(ADC_Channel_8,10); 
+   buf_adc_value[10] = (u8)(temp_adc>>8);
+   buf_adc_value[11] = (u8) (temp_adc );	
+	 temp_adc = 0;
+#endif 
+
+#ifdef leg_big		
+
+//6  
+   temp_adc = Get_Adc_Average(ADC_Channel_6,10); 
+   buf_adc_value[0] = (u8)(temp_adc>>8);
+   buf_adc_value[1] = (u8)(temp_adc );	//1	
+	 temp_adc = 0;
+//7  
+	 temp_adc = Get_Adc_Average(ADC_Channel_7,10);
+   buf_adc_value[2] = (u8)(temp_adc>>8);
+   buf_adc_value[3] = (u8)(temp_adc );		
+   temp_adc = 0;	 
+//PB08 Í¨µÀ
+   temp_adc = Get_Adc_Average(ADC_Channel_8,10); 
+   buf_adc_value[4] = (u8)(temp_adc>>8);
+   buf_adc_value[5] = (u8)(temp_adc);	
+	 temp_adc = 0;
+	 
+#endif 
+
+#ifdef back		
+
+//6  
+   temp_adc = Get_Adc_Average(ADC_Channel_6,10); 
+   buf_adc_value[0] = (u8)(temp_adc>>8);
+   buf_adc_value[1] = (u8)(temp_adc );	//1	
+	 temp_adc = 0;
+//7  
+	temp_adc = Get_Adc_Average(ADC_Channel_7,10);
+   buf_adc_value[2] = (u8)(temp_adc>>8);
+   buf_adc_value[3] = (u8)(temp_adc );		
+   temp_adc = 0;	 
+//PB08 Í¨µÀ
+   temp_adc = Get_Adc_Average(ADC_Channel_8,10); 
+   buf_adc_value[4] = (u8)(temp_adc>>8);
+   buf_adc_value[5] = (u8)(temp_adc );	
+	 temp_adc = 0;
+	 
+	 
+#endif 
+
+}
+void Can_Action(void)		
+{
+	   u8 i = 0;
+	   u8 buf[8] = {0};
+		int temp_adc  = 0;
+		u8 send_len  = 0;
+		switch(can_Node_buff[1])//Ö¸ÁîÂë
+		{
+		  case 11: //±íÊ¾½ÚµãÔÚÇëÇóÃüÁî
+           // Respond_node(can_Node_buff[0]);
+			   for(i=0;i<can_Node_buff[2];i++)
+			      buf[i] = can_Node_buff[3+i];
+			      Can_node_send_byte(1,11,buf,can_Node_buff[2]);
+			break;
+			case 22:		//·µ»Ø×ãµ×Êý¾Ý	£¬±³²¿Êý¾Ý	
+			   Can_send_adc(1,back_up_adc);
+			   for(i=0;i<6;i++)
+           back_up_adc[i] =  buf_adc_value[i];	
+			break;
+			case 24:		//·µ»ØÍÓÂÝÒÇºÍÀ­Á¦Öµ
+				 Can_send_small_leg_force(1,back_up_adc);
+			   //for(i=0;i<6;i++)
+			   
+			//Ð¡ÍÈÀ­Á¦Öµ
+         back_up_adc[0] =  buf_adc_value[6];	
+				 back_up_adc[1] =  buf_adc_value[7];		
+        
+			// ÍÓÂÝÒÇÊý¾Ý
+			   back_up_adc[2] =  send_rad[0];	
+				 back_up_adc[3] =  send_rad[1];
+			   back_up_adc[4] =  send_rad[2];	
+				 back_up_adc[5] =  send_rad[3];
+			break;
+
+			//×éºÏÐÎÊ½			
+	//		case 24:		
+				//Can_send_adc(1,buf_adc_value);				  
+//Ö»ÓÐÐ¡ÍÈ½ÚµãÓÐ			
+       //  delay_us(2);
+        // Can_send_small_leg_force(1,&buf_adc_value[6]);				
+				 break;
+			 case 25:		  
+        // Can_send_rad(1,send_rad);		
+			 break;
+			 default: break;
+			
+		}
+			
+
+}
+void can_diver(void)
+{
+   if(fished_can == 1)//½ÓÊÕÍê³É
+	 {
+	     	fished_can = 0;
+		    LED1 = ~LED1;
+        Can_Action();
+	 }
+
+}
+
+ 
+#if CAN_RX0_INT_ENABLE	//Ê¹ÄÜRX0ÖÐ¶Ï
+//ÖÐ¶Ï·þÎñº¯Êý			    
+void USB_LP_CAN1_RX0_IRQHandler(void)
+{
+  CanRxMsg RxMessage;
+  unsigned char  i=0;
+	
+	CAN_Receive(CAN1, 0, &RxMessage);
+	  for(i=0;i<8;i++)
+	  {
+			can_Node_buff[i]=RxMessage.Data[i] ;
+	  }	
+	  Can_Action();
+  // fished_can =1;		
+}
+#endif
+
+//can·¢ËÍÒ»×éÊý¾Ý(¹Ì¶¨¸ñÊ½:IDÎª0X12,±ê×¼Ö¡,Êý¾ÝÖ¡)	
+//len:Êý¾Ý³¤¶È(×î´óÎª8)				     
+//msg:Êý¾ÝÖ¸Õë,×î´óÎª8¸ö×Ö½Ú.
+//·µ»ØÖµ:0,³É¹¦;
+//		 ÆäËû,Ê§°Ü;
+u8 Can_Send_Msg(u8* msg,u8 len)
+{	
+  u8 mbox;
+  u16 i=0;
+  CanTxMsg TxMessage;
+  TxMessage.StdId=0x12; // ±ê×¼±êÊ¶·ûÎª0
+  TxMessage.ExtId=0x12;	// ÉèÖÃÀ©Õ¹±êÊ¾·û£¨29Î»£©
+  TxMessage.IDE=0;// Ê¹ÓÃÀ©Õ¹±êÊ¶·û
+  TxMessage.RTR=0; // ÏûÏ¢ÀàÐÍÎªÊý¾ÝÖ¡£¬Ò»Ö¡8Î»
+  TxMessage.DLC=len;							 // ·¢ËÍÁ½Ö¡ÐÅÏ¢
+  for(i=0;i<len;i++)
+  TxMessage.Data[i]=msg[i];				 // µÚÒ»Ö¡ÐÅÏ¢          
+  mbox= CAN_Transmit(CAN1, &TxMessage);   
+  i=0;
+  while((CAN_TransmitStatus(CAN1, mbox)==CAN_TxStatus_Failed)&&(i<0XFFF))i++;	//µÈ´ý·¢ËÍ½áÊø
+  if(i>=0XFFF)return 1;
+  return 0;		
+
+}
+//can¿Ú½ÓÊÕÊý¾Ý²éÑ¯
+//buf:Êý¾Ý»º´æÇø;	 
+//·µ»ØÖµ:0,ÎÞÊý¾Ý±»ÊÕµ½;
+//		 ÆäËû,½ÓÊÕµÄÊý¾Ý³¤¶È;
+u8 Can_Receive_Msg(u8 *buf)
+{		   		   
+ 	u32 i;
+	CanRxMsg RxMessage;
+    if( CAN_MessagePending(CAN1,CAN_FIFO0)==0)return 0;		//Ã»ÓÐ½ÓÊÕµ½Êý¾Ý,Ö±½ÓÍË³ö 
+    CAN_Receive(CAN1, CAN_FIFO0, &RxMessage);//¶ÁÈ¡Êý¾Ý	
+    for(i=0;i<8;i++)
+    buf[i]=RxMessage.Data[i];  
+	return RxMessage.DLC;	
+}
+
+
+
+
+
+
+
+
+
